@@ -4,8 +4,10 @@ import android.app.Activity;
 import android.app.admin.DevicePolicyManager;
 import android.content.ComponentName;
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Color;
+import android.os.Binder;
 import android.os.Bundle;
 import android.os.CountDownTimer;
 import android.os.UserManager;
@@ -18,7 +20,9 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
+import java.util.HashSet;
 import java.util.Locale;
+import java.util.Set;
 
 public class MainActivity extends Activity {
 
@@ -29,6 +33,7 @@ public class MainActivity extends Activity {
     private TextView tvTimer;
     private EditText etMinutes;
     private Button btnStart;
+    private Button btnAllowedApps;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -70,6 +75,10 @@ public class MainActivity extends Activity {
         btnStart.setText("START STRICT ZEN LOCK");
         layout.addView(btnStart);
 
+        btnAllowedApps = new Button(this);
+        btnAllowedApps.setText("Configure Allowed Apps");
+        layout.addView(btnAllowedApps);
+
         setContentView(layout);
 
         long endTime = prefs.getLong("end_time", 0L);
@@ -92,14 +101,48 @@ public class MainActivity extends Activity {
             prefs.edit().putLong("end_time", targetTime).apply();
             enforceStrictLock(durationMillis);
         });
+
+        btnAllowedApps.setOnClickListener(v -> {
+            Intent i = new Intent(this, AllowedAppsActivity.class);
+            startActivity(i);
+        });
+
+        // Handle kill switch intent if app launched via KillReceiver
+        if (getIntent() != null && getIntent().getBooleanExtra("kill_now", false)) {
+            unlockDevice();
+        }
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        if (intent != null && intent.getBooleanExtra("kill_now", false)) {
+            unlockDevice();
+        }
     }
 
     private void enforceStrictLock(long remainingMillis) {
         etMinutes.setVisibility(View.GONE);
         btnStart.setVisibility(View.GONE);
+        btnAllowedApps.setVisibility(View.GONE);
+
+        // Build allowed package list: include this app plus up to 6 user-selected apps
+        Set<String> allowed = prefs.getStringSet("allowed_apps", new HashSet<>());
+        Set<String> packages = new HashSet<>();
+        packages.add(getPackageName());
+        int count = 0;
+        for (String p : allowed) {
+            if (p == null) continue;
+            if (packages.contains(p)) continue;
+            packages.add(p);
+            count++;
+            if (count >= 6) break; // cap at 6 user apps
+        }
+
+        String[] pkgsArray = packages.toArray(new String[0]);
 
         if (dpm.isDeviceOwnerApp(getPackageName())) {
-            dpm.setLockTaskPackages(adminComponent, new String[]{getPackageName()});
+            dpm.setLockTaskPackages(adminComponent, pkgsArray);
             dpm.setLockTaskFeatures(adminComponent, DevicePolicyManager.LOCK_TASK_FEATURE_NONE);
             dpm.addUserRestriction(adminComponent, UserManager.DISALLOW_SAFE_BOOT);
             dpm.addUserRestriction(adminComponent, UserManager.DISALLOW_FACTORY_RESET);
@@ -133,11 +176,16 @@ public class MainActivity extends Activity {
             dpm.clearUserRestriction(adminComponent, UserManager.DISALLOW_SAFE_BOOT);
             dpm.clearUserRestriction(adminComponent, UserManager.DISALLOW_FACTORY_RESET);
             dpm.setUninstallBlocked(adminComponent, getPackageName(), false);
-            stopLockTask();
+            // reset allowed packages to only this package
+            dpm.setLockTaskPackages(adminComponent, new String[]{getPackageName()});
+            try {
+                stopLockTask();
+            } catch (Exception ignored) {}
         }
         tvTimer.setText("00:00:00");
         etMinutes.setVisibility(View.VISIBLE);
         btnStart.setVisibility(View.VISIBLE);
+        btnAllowedApps.setVisibility(View.VISIBLE);
     }
 
     @Override
